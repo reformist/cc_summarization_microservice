@@ -14,6 +14,8 @@ from typing import Optional
 from models.person import PersonCreate, PersonRead, PersonUpdate
 from models.address import AddressCreate, AddressRead, AddressUpdate
 from models.health import Health
+from models.product import Product
+from models.service import Service
 
 port = int(os.environ.get("FASTAPIPORT", 8000))
 
@@ -22,6 +24,7 @@ port = int(os.environ.get("FASTAPIPORT", 8000))
 # -----------------------------------------------------------------------------
 persons: Dict[UUID, PersonRead] = {}
 addresses: Dict[UUID, AddressRead] = {}
+products: Dict[UUID, Product] = {}
 
 app = FastAPI(
     title="Person/Address API",
@@ -38,6 +41,17 @@ def make_health(echo: Optional[str], path_echo: Optional[str]=None) -> Health:
         status=200,
         status_message="OK",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        ip_address=socket.gethostbyname(socket.gethostname()),
+        echo=echo,
+        path_echo=path_echo
+    )
+
+
+def make_product(echo: Optional[str], path_echo: Optional[str]=None) -> Product:
+    return Product(
+        status=200,
+        status_message="OK",
+        timestamp=datetime.utcnow().isoformat() + "Y",
         ip_address=socket.gethostbyname(socket.gethostname()),
         echo=echo,
         path_echo=path_echo
@@ -158,6 +172,56 @@ def update_person(person_id: UUID, update: PersonUpdate):
     stored.update(update.model_dump(exclude_unset=True))
     persons[person_id] = PersonRead(**stored)
     return persons[person_id]
+
+@app.get("/product", response_model=Product)
+def get_product_no_path(echo: str | None = Query(None, description="Optional echo string")):
+    # Works because path_echo is optional in the model
+    return make_product(echo=echo, path_echo=None)
+
+@app.post("/product", response_model=Product, status_code=201)
+def create_product():
+    return make_product(echo=None, path_echo=None)
+
+@app.get("/product/{path_echo}", response_model=Product)
+def get_product_with_path(
+    path_echo: str = Path(..., description="Required echo in the URL path"),
+    echo: str | None = Query(None, description="Optional echo string"),
+):
+    return make_product(echo=echo, path_echo=path_echo)
+
+@app.put("/product/{path_echo}", response_model=Product, status_code=201)
+def create_product(path_echo: str):
+    return make_product(echo=None, path_echo=path_echo)
+
+@app.delete("/product/{path_echo}", response_model=Product)
+def delete_product(path_echo):
+    return make_product(echo=None, path_echo=path_echo)
+
+
+
+@app.get("/service", response_model=Service)
+def get_product_no_path(echo: str | None = Query(None, description="Optional echo string")):
+    # Works because path_echo is optional in the model
+    return make_product(echo=echo, path_echo=None)
+
+@app.post("/service", response_model=Service, status_code=201)
+def create_product():
+    return make_product(echo=None, path_echo=None)
+
+@app.get("/service/{path_echo}", response_model=Service)
+def get_product_with_path(
+    path_echo: str = Path(..., description="Required echo in the URL path"),
+    echo: str | None = Query(None, description="Optional echo string"),
+):
+    return make_product(echo=echo, path_echo=path_echo)
+
+@app.put("/service/{path_echo}", response_model=Service, status_code=201)
+def create_product(path_echo: str):
+    return make_product(echo=None, path_echo=path_echo)
+
+@app.delete("/service/{path_echo}", response_model=Service)
+def delete_product(path_echo):
+    return make_product(echo=None, path_echo=path_echo)
 
 # -----------------------------------------------------------------------------
 # Root
