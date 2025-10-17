@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, EmailStr, StringConstraints
 from .address import AddressBase
 
 # Columbia UNI: 2–3 lowercase letters + 1–4 digits (e.g., abc1234)
+# UNIType = Annotated[str, StringConstraints(pattern=r"^[a-z]{2,3}\d{1,4}$")]
 UNIType = Annotated[str, StringConstraints(pattern=r"^[a-z]{2,3}\d{1,4}$")]
 
 

@@ -27,8 +27,8 @@ addresses: Dict[UUID, AddressRead] = {}
 products: Dict[UUID, Product] = {}
 
 app = FastAPI(
-    title="Person/Address API",
-    description="Demo FastAPI app using Pydantic v2 models for Person and Address",
+    title="Summarization Microservice",
+    description="Integrates transcription audio into a summarized text format",
     version="0.1.0",
 )
 
