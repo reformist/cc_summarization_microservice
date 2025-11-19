@@ -37,7 +37,7 @@ app = FastAPI(
 # -----------------------------------------------------------------------------
 # Address endpoints
 # -----------------------------------------------------------------------------
-
+# test
 def create_summarization(summarization: SummarizationCreate):
     new_summarization = summarization.text[:5]
     return SummarizationCreate(
@@ -81,7 +81,7 @@ def create_summarization_endpoint(summarization: SummarizationCreate):
 @app.delete("/summarizations/{summarization_id}", response_model=SummarizationDelete)
 def delete_summarization(summarization_id: int):
     if summarization_id not in summarizations:
-        raise HTTPException(status_code=404, detail="Summarization not found")
+        raise HTTPException(status_code=404, detail="Summarization not implemented")
 
     del summarizations[summarization_id]
 
@@ -95,7 +95,7 @@ def delete_summarization(summarization_id: int):
 @app.patch("/summarizations/{summarization_id}", response_model=SummarizationDelete)
 def update_summarization(summarization_id: int, update: SummarizationUpdate):
     if summarization_id not in summarizations:
-        raise HTTPException(status_code=404, detail="Summarization not found")
+        raise HTTPException(status_code=404, detail="Summarization not implemented")
 
     stored = summarizations[summarization_id]
     update_data = update.dict(exclude_unset=True)  # only update provided fields
