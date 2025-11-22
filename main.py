@@ -17,7 +17,8 @@ from models.health import Health
 from models.product import Product
 from models.service import Service
 from models.summarization import SummarizationCreate, SummarizationRead, SummarizationDelete, SummarizationUpdate
-
+import pymysql
+from pymysql.cursors import DictCursor
 port = int(os.environ.get("FASTAPIPORT", 8000))
 
 # -----------------------------------------------------------------------------
@@ -34,6 +35,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
+conn = pymysql.connect(
+    host="127.0.0.1",  # or Cloud SQL private/public IP
+    user="test",
+    password="1234",
+    database="summarization-microservice-cloudsql",
+    cursorclass=pymysql.cursors.DictCursor
+)
 # -----------------------------------------------------------------------------
 # Address endpoints
 # -----------------------------------------------------------------------------
@@ -70,39 +78,108 @@ def create_summarization(summarization: SummarizationCreate):
 #     )
 
 
-@app.get("/summarizations/{id}", response_model=SummarizationRead)
+@app.get("/summarizations/{summarization_id}", response_model=SummarizationRead)
 def get_summarization(summarization_id: int):
-    return SummarizationRead(summarization_id=summarization_id, summary="This is an example of a long paragraph.")
+    with conn.cursor() as cursor:
+        sql = "SELECT id, summary FROM summaries WHERE id=%s"
+        cursor.execute(sql, (summarization_id,))
+        result = cursor.fetchone()
 
-@app.post("/summarizations", response_model=SummarizationCreate)
-def create_summarization_endpoint(summarization: SummarizationCreate):
-    return create_summarization(summarization)
+    if not result:
+        raise HTTPException(status_code=404, detail="Summarization not found")
 
-@app.delete("/summarizations/{summarization_id}", response_model=SummarizationDelete)
+    # Map SQL row to Pydantic model
+    return SummarizationRead(
+        summarization_id=result["id"],
+        summary=result["summary"]
+    )
+# POST endpoint
+@app.post("/summarizations", response_model=SummarizationRead)
+def create_summarization(summarization: SummarizationCreate):
+    with conn.cursor() as cursor:
+        sql = "INSERT INTO summaries (input_text, summary) VALUES (%s, %s)"
+        cursor.execute(sql, (summarization.input_text, summarization.summary))
+        conn.commit()
+        new_id = cursor.lastrowid  # get the auto-generated ID
+
+    return SummarizationRead(
+        summarization_id=new_id,
+        summary=summarization.summary
+    )
+# PUT endpoint
+@app.put("/summarizations/{summarization_id}", response_model=SummarizationRead)
+def update_summarization(summarization_id: int, summarization: SummarizationUpdate):
+    with conn.cursor() as cursor:
+        # Check if the row exists
+        cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
+        existing = cursor.fetchone()
+
+        if existing:
+            # Update existing summary
+            sql = "UPDATE summaries SET input_text=%s, summary=%s WHERE id=%s"
+            cursor.execute(sql, (summarization.input_text, summarization.summary, summarization_id))
+        else:
+            # Insert a new row with the given ID
+            sql = "INSERT INTO summaries (id, input_text, summary) VALUES (%s, %s, %s)"
+            cursor.execute(sql, (summarization_id, summarization.input_text, summarization.summary))
+
+        conn.commit()
+
+        # Return the updated/created row
+        return SummarizationRead(
+            summarization_id=summarization_id,
+            summary=summarization.summary
+        )
+
+# DELETE endpoint
+@app.delete("/summarizations/{summarization_id}")
 def delete_summarization(summarization_id: int):
-    if summarization_id not in summarizations:
-        raise HTTPException(status_code=404, detail="Summarization not implemented")
+    with conn.cursor() as cursor:
+        # Check if the row exists
+        cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Summarization not found")
 
-    del summarizations[summarization_id]
+        # Delete the row
+        cursor.execute("DELETE FROM summaries WHERE id=%s", (summarization_id,))
+        conn.commit()
 
-    return SummarizationDelete(
+    return {"message": f"Summarization with id {summarization_id} deleted successfully"}
+
+
+    # UPDATE endpoint
+@app.put("/summarizations/{summarization_id}", response_model=SummarizationRead)
+def update_summarization(summarization_id: int, summarization: SummarizationUpdate):
+    with conn.cursor() as cursor:
+        # Check if row exists
+        cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Summarization not found")
+
+        # Update the row
+        sql = "UPDATE summaries SET input_text=%s, summary=%s WHERE id=%s"
+        cursor.execute(sql, (summarization.input_text, summarization.summary, summarization_id))
+        conn.commit()
+
+    return SummarizationRead(
         summarization_id=summarization_id,
-        status=200,
-        message="Summarization deleted successfully"
+        summary=summarization.summary
     )
 
 
-@app.patch("/summarizations/{summarization_id}", response_model=SummarizationDelete)
-def update_summarization(summarization_id: int, update: SummarizationUpdate):
-    if summarization_id not in summarizations:
-        raise HTTPException(status_code=404, detail="Summarization not implemented")
+# @app.patch("/summarizations/{summarization_id}", response_model=SummarizationDelete)
+# def update_summarization(summarization_id: int, update: SummarizationUpdate):
+#     if summarization_id not in summarizations:
+#         raise HTTPException(status_code=404, detail="Summarization not implemented")
 
-    stored = summarizations[summarization_id]
-    update_data = update.dict(exclude_unset=True)  # only update provided fields
-    stored.update(update_data)
-    summarizations[summarization_id] = stored
+#     stored = summarizations[summarization_id]
+#     update_data = update.dict(exclude_unset=True)  # only update provided fields
+#     stored.update(update_data)
+#     summarizations[summarization_id] = stored
 
-    return Summarization(**stored)
+#     return Summarization(**stored)
 # @app.update("/summarizations/{id}", response_model=SummarizationUpdate)
  
 

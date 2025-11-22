@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional
+import pymysql
+from pymysql.cursors import DictCursor
 
 
 # this is what I return to the user
@@ -35,3 +37,4 @@ class SummarizationRead(BaseModel):
 class SummarizationUpdate(BaseModel):
     id: int = Field(..., description="Unique identifier for the summarization entry to update")
     summary: str = Field(..., description="The updated summarized text")
+    input_text: str = Field(..., description="input text")
