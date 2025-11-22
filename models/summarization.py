@@ -5,6 +5,10 @@ from pymysql.cursors import DictCursor
 
 
 # this is what I return to the user
+
+class AsyncRequest(BaseModel):
+    input_text: str
+
 class Summarization(BaseModel):
     patient_id: Optional[int] = Field(default=None, description="ID of the patient associated with the text")
     summarization_id: Optional[int] = Field(default=None, description="Unique identifier for the summarization entry")
@@ -22,7 +26,8 @@ print(item.model_dump())
 # creating a new summarization
 class SummarizationCreate(BaseModel):
     patient_id: int = Field(..., description="ID of the patient associated with the text")
-    text: str = Field(..., description="Text to be summarized")
+    summary: str = Field(..., description="The updated summarized text")
+    input_text: str = Field(..., description="input text")
 
 # deleting a summarization
 class SummarizationDelete(BaseModel):

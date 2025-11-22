@@ -16,9 +16,12 @@ from models.address import AddressCreate, AddressRead, AddressUpdate
 from models.health import Health
 from models.product import Product
 from models.service import Service
-from models.summarization import SummarizationCreate, SummarizationRead, SummarizationDelete, SummarizationUpdate
+from models.summarization import SummarizationCreate, SummarizationRead, SummarizationDelete, SummarizationUpdate, AsyncRequest
 import pymysql
 from pymysql.cursors import DictCursor
+import uuid
+import threading
+import time
 port = int(os.environ.get("FASTAPIPORT", 8000))
 
 # -----------------------------------------------------------------------------
@@ -27,6 +30,10 @@ port = int(os.environ.get("FASTAPIPORT", 8000))
 # persons: Dict[UUID, PersonRead] = {}
 # addresses: Dict[UUID, AddressRead] = {}
 # products: Dict[UUID, Product] = {}
+
+
+
+
 summarizations: Dict[UUID, SummarizationRead] = {}
 
 app = FastAPI(
@@ -78,74 +85,94 @@ def create_summarization(summarization: SummarizationCreate):
 #     )
 
 
-@app.get("/summarizations/{summarization_id}", response_model=SummarizationRead)
+@app.get("/summarizations/{summarization_id}")
 def get_summarization(summarization_id: int):
     with conn.cursor() as cursor:
-        sql = "SELECT id, summary FROM summaries WHERE id=%s"
+        sql = "SELECT id, input_text, summary FROM summaries WHERE id=%s"
         cursor.execute(sql, (summarization_id,))
-        result = cursor.fetchone()
+        row = cursor.fetchone()
 
-    if not result:
+    if not row:
         raise HTTPException(status_code=404, detail="Summarization not found")
 
-    # Map SQL row to Pydantic model
-    return SummarizationRead(
-        summarization_id=result["id"],
-        summary=result["summary"]
-    )
+    # Return linked-data response
+    return {
+        "summarization_id": row["id"],
+        "input_text": row["input_text"],
+        "summary": row["summary"],
+        "links": [
+            {"rel": "self", "href": f"/summarizations/{row['id']}"},
+            {"rel": "collection", "href": "/summarizations"},
+            {"rel": "update", "href": f"/summarizations/{row['id']}"},
+            {"rel": "delete", "href": f"/summarizations/{row['id']}"}
+        ]
+    }
+
 # POST endpoint
-@app.post("/summarizations", response_model=SummarizationRead)
-def create_summarization(summarization: SummarizationCreate):
+@app.post("/summarizations", response_model=dict, status_code=201)
+def create_summarization(input_text: str, summary: str):
     with conn.cursor() as cursor:
         sql = "INSERT INTO summaries (input_text, summary) VALUES (%s, %s)"
-        cursor.execute(sql, (summarization.input_text, summarization.summary))
+        cursor.execute(sql, (input_text, summary))
+        new_id = cursor.lastrowid
         conn.commit()
-        new_id = cursor.lastrowid  # get the auto-generated ID
 
-    return SummarizationRead(
-        summarization_id=new_id,
-        summary=summarization.summary
-    )
+    return {
+        "summarization_id": new_id,
+        "input_text": input_text,
+        "summary": summary,
+        "links": [
+            {"rel": "self", "href": f"/summarizations/{new_id}"},
+            {"rel": "collection", "href": "/summarizations"},
+            {"rel": "update", "href": f"/summarizations/{new_id}"},
+            {"rel": "delete", "href": f"/summarizations/{new_id}"}
+        ]
+    }
 # PUT endpoint
-@app.put("/summarizations/{summarization_id}", response_model=SummarizationRead)
-def update_summarization(summarization_id: int, summarization: SummarizationUpdate):
+@app.put("/summarizations/{summarization_id}", response_model=dict)
+def update_summarization(summarization_id: int, s: SummarizationUpdate):
     with conn.cursor() as cursor:
-        # Check if the row exists
         cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
-        existing = cursor.fetchone()
+        exists = cursor.fetchone()
 
-        if existing:
-            # Update existing summary
-            sql = "UPDATE summaries SET input_text=%s, summary=%s WHERE id=%s"
-            cursor.execute(sql, (summarization.input_text, summarization.summary, summarization_id))
-        else:
-            # Insert a new row with the given ID
-            sql = "INSERT INTO summaries (id, input_text, summary) VALUES (%s, %s, %s)"
-            cursor.execute(sql, (summarization_id, summarization.input_text, summarization.summary))
-
-        conn.commit()
-
-        # Return the updated/created row
-        return SummarizationRead(
-            summarization_id=summarization_id,
-            summary=summarization.summary
-        )
-
-# DELETE endpoint
-@app.delete("/summarizations/{summarization_id}")
-def delete_summarization(summarization_id: int):
-    with conn.cursor() as cursor:
-        # Check if the row exists
-        cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
-        existing = cursor.fetchone()
-        if not existing:
+        if not exists:
             raise HTTPException(status_code=404, detail="Summarization not found")
 
-        # Delete the row
+        sql = "UPDATE summaries SET input_text=%s, summary=%s WHERE id=%s"
+        cursor.execute(sql, (s.input_text, s.summary, summarization_id))
+        conn.commit()
+
+    return {
+        "summarization_id": summarization_id,
+        "input_text": s.input_text,
+        "summary": s.summary,
+        "links": [
+            {"rel": "self", "href": f"/summarizations/{summarization_id}"},
+            {"rel": "collection", "href": "/summarizations"},
+            {"rel": "update", "href": f"/summarizations/{summarization_id}"},
+            {"rel": "delete", "href": f"/summarizations/{summarization_id}"}
+        ]
+    }
+
+# DELETE endpoint
+@app.delete("/summarizations/{summarization_id}", response_model=dict)
+def delete_summarization(summarization_id: int):
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
+        exists = cursor.fetchone()
+
+        if not exists:
+            raise HTTPException(status_code=404, detail="Summarization not found")
+
         cursor.execute("DELETE FROM summaries WHERE id=%s", (summarization_id,))
         conn.commit()
 
-    return {"message": f"Summarization with id {summarization_id} deleted successfully"}
+    return {
+        "message": f"Summarization {summarization_id} deleted",
+        "links": [
+            {"rel": "collection", "href": "/summarizations"}
+        ]
+    }
 
 
     # UPDATE endpoint
@@ -169,186 +196,81 @@ def update_summarization(summarization_id: int, summarization: SummarizationUpda
     )
 
 
-# @app.patch("/summarizations/{summarization_id}", response_model=SummarizationDelete)
-# def update_summarization(summarization_id: int, update: SummarizationUpdate):
-#     if summarization_id not in summarizations:
-#         raise HTTPException(status_code=404, detail="Summarization not implemented")
+jobs = {}
 
-#     stored = summarizations[summarization_id]
-#     update_data = update.dict(exclude_unset=True)  # only update provided fields
-#     stored.update(update_data)
-#     summarizations[summarization_id] = stored
+# ---- BACKGROUND WORKER ----
+def run_summarization_job(job_id: str, input_text: str):
+    try:
+        jobs[job_id]["status"] = "processing"
 
-#     return Summarization(**stored)
-# @app.update("/summarizations/{id}", response_model=SummarizationUpdate)
- 
+        # Simulate slow summarization (replace with real model)
+        time.sleep(20)
+        summary = input_text[:5]  # pretend this is the summarizer
 
+        # Save into the database
+        with conn.cursor() as cursor:
+            sql = "INSERT INTO summaries (input_text, summary) VALUES (%s, %s)"
+            cursor.execute(sql, (input_text, summary))
+            conn.commit()
 
-# @app.get("/health", response_model=Health)
-# def get_health_no_path(echo: str | None = Query(None, description="Optional echo string")):
-#     # Works because path_echo is optional in the model
-#     return make_health(echo=echo, path_echo=None)
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["summary"] = summary
 
-# @app.get("/health/{path_echo}", response_model=Health)
-# def get_health_with_path(
-#     path_echo: str = Path(..., description="Required echo in the URL path"),
-#     echo: str | None = Query(None, description="Optional echo string"),
-# ):
-#     return make_health(echo=echo, path_echo=path_echo)
+    except Exception as e:
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
 
-# @app.post("/addresses", response_model=AddressRead, status_code=201)
-# def create_address(address: AddressCreate):
-#     if address.id in addresses:
-#         raise HTTPException(status_code=400, detail="Address with this ID already exists")
-#     addresses[address.id] = AddressRead(**address.model_dump())
-#     return addresses[address.id]
+# ------------------------------
+# 1️⃣  ASYNC SUMMARIZATION ENDPOINT (returns 202)
+# ------------------------------
+@app.post("/summarizations/async", status_code=202)
+def create_async_summarization(input_text: str):
 
-# @app.get("/addresses", response_model=List[AddressRead])
-# def list_addresses(
-#     street: Optional[str] = Query(None, description="Filter by street"),
-#     city: Optional[str] = Query(None, description="Filter by city"),
-#     state: Optional[str] = Query(None, description="Filter by state/region"),
-#     postal_code: Optional[str] = Query(None, description="Filter by postal code"),
-#     country: Optional[str] = Query(None, description="Filter by country"),
-# ):
-#     results = list(addresses.values())
+    job_id = str(uuid.uuid4())
 
-#     if street is not None:
-#         results = [a for a in results if a.street == street]
-#     if city is not None:
-#         results = [a for a in results if a.city == city]
-#     if state is not None:
-#         results = [a for a in results if a.state == state]
-#     if postal_code is not None:
-#         results = [a for a in results if a.postal_code == postal_code]
-#     if country is not None:
-#         results = [a for a in results if a.country == country]
+    jobs[job_id] = {
+        "status": "pending",
+        "summary": None
+    }
 
-#     return results
+    # Launch background worker
+    thread = threading.Thread(
+        target=run_summarization_job,
+        args=(job_id, input_text)
+    )
+    thread.start()
 
-# @app.get("/addresses/{address_id}", response_model=AddressRead)
-# def get_address(address_id: UUID):
-#     if address_id not in addresses:
-#         raise HTTPException(status_code=404, detail="Address not found")
-#     return addresses[address_id]
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "links": [
+            {"rel": "self", "href": f"/jobs/{job_id}"}
+        ]
+    }
 
-# @app.patch("/addresses/{address_id}", response_model=AddressRead)
-# def update_address(address_id: UUID, update: AddressUpdate):
-#     if address_id not in addresses:
-#         raise HTTPException(status_code=404, detail="Address not found")
-#     stored = addresses[address_id].model_dump()
-#     stored.update(update.model_dump(exclude_unset=True))
-#     addresses[address_id] = AddressRead(**stored)
-#     return addresses[address_id]
+# ------------------------------
+# 2️⃣  JOB STATUS POLLING
+# ------------------------------
+@app.get("/jobs/{job_id}")
+def get_job_status(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
 
-# -----------------------------------------------------------------------------
-# Person endpoints
-# -----------------------------------------------------------------------------
-# @app.post("/persons", response_model=PersonRead, status_code=201)
-# def create_person(person: PersonCreate):
-#     # Each person gets its own UUID; stored as PersonRead
-#     person_read = PersonRead(**person.model_dump())
-#     persons[person_read.id] = person_read
-#     return person_read
+    job = jobs[job_id]
 
-# @app.get("/persons", response_model=List[PersonRead])
-# def list_persons(
-#     uni: Optional[str] = Query(None, description="Filter by Columbia UNI"),
-#     first_name: Optional[str] = Query(None, description="Filter by first name"),
-#     last_name: Optional[str] = Query(None, description="Filter by last name"),
-#     email: Optional[str] = Query(None, description="Filter by email"),
-#     phone: Optional[str] = Query(None, description="Filter by phone number"),
-#     birth_date: Optional[str] = Query(None, description="Filter by date of birth (YYYY-MM-DD)"),
-#     city: Optional[str] = Query(None, description="Filter by city of at least one address"),
-#     country: Optional[str] = Query(None, description="Filter by country of at least one address"),
-# ):
-#     results = list(persons.values())
+    response = {
+        "job_id": job_id,
+        "status": job["status"],
+        "links": [{"rel": "self", "href": f"/jobs/{job_id}"}]
+    }
 
-#     if uni is not None:
-#         results = [p for p in results if p.uni == uni]
-#     if first_name is not None:
-#         results = [p for p in results if p.first_name == first_name]
-#     if last_name is not None:
-#         results = [p for p in results if p.last_name == last_name]
-#     if email is not None:
-#         results = [p for p in results if p.email == email]
-#     if phone is not None:
-#         results = [p for p in results if p.phone == phone]
-#     if birth_date is not None:
-#         results = [p for p in results if str(p.birth_date) == birth_date]
+    if job["status"] == "completed":
+        response["summary"] = job["summary"]
 
-#     # nested address filtering
-#     if city is not None:
-#         results = [p for p in results if any(addr.city == city for addr in p.addresses)]
-#     if country is not None:
-#         results = [p for p in results if any(addr.country == country for addr in p.addresses)]
+    if job["status"] == "failed":
+        response["error"] = job.get("error")
 
-#     return results
-
-# @app.get("/persons/{person_id}", response_model=PersonRead)
-# def get_person(person_id: UUID):
-#     if person_id not in persons:
-#         raise HTTPException(status_code=404, detail="Person not found")
-#     return persons[person_id]
-
-# @app.patch("/persons/{person_id}", response_model=PersonRead)
-# def update_person(person_id: UUID, update: PersonUpdate):
-#     if person_id not in persons:
-#         raise HTTPException(status_code=404, detail="Person not found")
-#     stored = persons[person_id].model_dump()
-#     stored.update(update.model_dump(exclude_unset=True))
-#     persons[person_id] = PersonRead(**stored)
-#     return persons[person_id]
-
-# @app.get("/product", response_model=Product)
-# def get_product_no_path(echo: str | None = Query(None, description="Optional echo string")):
-#     # Works because path_echo is optional in the model
-#     return make_product(echo=echo, path_echo=None)
-
-# @app.post("/product", response_model=Product, status_code=201)
-# def create_product():
-#     return make_product(echo=None, path_echo=None)
-
-# @app.get("/product/{path_echo}", response_model=Product)
-# def get_product_with_path(
-#     path_echo: str = Path(..., description="Required echo in the URL path"),
-#     echo: str | None = Query(None, description="Optional echo string"),
-# ):
-#     return make_product(echo=echo, path_echo=path_echo)
-
-# @app.put("/product/{path_echo}", response_model=Product, status_code=201)
-# def create_product(path_echo: str):
-#     return make_product(echo=None, path_echo=path_echo)
-
-# @app.delete("/product/{path_echo}", response_model=Product)
-# def delete_product(path_echo):
-#     return make_product(echo=None, path_echo=path_echo)
-
-
-
-# @app.get("/service", response_model=Service)
-# def get_product_no_path(echo: str | None = Query(None, description="Optional echo string")):
-#     # Works because path_echo is optional in the model
-#     return make_product(echo=echo, path_echo=None)
-
-# @app.post("/service", response_model=Service, status_code=201)
-# def create_product():
-#     return make_product(echo=None, path_echo=None)
-
-# @app.get("/service/{path_echo}", response_model=Service)
-# def get_product_with_path(
-#     path_echo: str = Path(..., description="Required echo in the URL path"),
-#     echo: str | None = Query(None, description="Optional echo string"),
-# ):
-#     return make_product(echo=echo, path_echo=path_echo)
-
-# @app.put("/service/{path_echo}", response_model=Service, status_code=201)
-# def create_product(path_echo: str):
-#     return make_product(echo=None, path_echo=path_echo)
-
-# @app.delete("/service/{path_echo}", response_model=Service)
-# def delete_product(path_echo):
-#     return make_product(echo=None, path_echo=path_echo)
+    return response
 
 # -----------------------------------------------------------------------------
 # Root
