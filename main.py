@@ -44,9 +44,8 @@ app = FastAPI(
 
 conn = pymysql.connect(
     host="127.0.0.1",  # or Cloud SQL private/public IP
-    user="test",
-    password="1234",
-    database="summarization-microservice-cloudsql",
+    user="root",
+    database="summaries",
     cursorclass=pymysql.cursors.DictCursor
 )
 # -----------------------------------------------------------------------------
@@ -130,7 +129,7 @@ def create_summarization(input_text: str, summary: str):
     }
 # PUT endpoint
 @app.put("/summarizations/{summarization_id}", response_model=dict)
-def update_summarization(summarization_id: int, s: SummarizationUpdate):
+def update_summarization(summarization_id: int, summary: str):
     with conn.cursor() as cursor:
         cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
         exists = cursor.fetchone()
@@ -138,14 +137,13 @@ def update_summarization(summarization_id: int, s: SummarizationUpdate):
         if not exists:
             raise HTTPException(status_code=404, detail="Summarization not found")
 
-        sql = "UPDATE summaries SET input_text=%s, summary=%s WHERE id=%s"
-        cursor.execute(sql, (s.input_text, s.summary, summarization_id))
+        sql = "UPDATE summaries SET summary=%s WHERE id=%s"
+        cursor.execute(sql, (summary, summarization_id))
         conn.commit()
-
+# test
     return {
         "summarization_id": summarization_id,
-        "input_text": s.input_text,
-        "summary": s.summary,
+        "summary": summary,
         "links": [
             {"rel": "self", "href": f"/summarizations/{summarization_id}"},
             {"rel": "collection", "href": "/summarizations"},
