@@ -22,6 +22,15 @@ from pymysql.cursors import DictCursor
 import uuid
 import threading
 import time
+
+
+from google.cloud import pubsub_v1
+
+publisher = pubsub_v1.PublisherClient()
+topic_path = publisher.topic_path("cloudcomputing-473814", "summarization-events")
+
+
+
 port = int(os.environ.get("FASTAPIPORT", 8000))
 
 # -----------------------------------------------------------------------------
@@ -84,35 +93,68 @@ def create_summarization(summarization: SummarizationCreate):
 #     )
 
 
-@app.get("/summarizations/{summarization_id}")
-def get_summarization(summarization_id: int):
-    with conn.cursor() as cursor:
-        sql = "SELECT id, input_text, summary FROM summaries WHERE id=%s"
-        cursor.execute(sql, (summarization_id,))
-        row = cursor.fetchone()
+from typing import List, Optional
+from fastapi import Query
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Summarization not found")
+@app.get("/summarizations")
+def get_summarizations(
+    patient_id: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0)
+):
+    event_message = f"GET request for patient_id={patient_id}"
+    publisher.publish(topic_path, event_message.encode("utf-8"))
 
-    # Return linked-data response
-    return {
-        "summarization_id": row["id"],
-        "input_text": row["input_text"],
-        "summary": row["summary"],
-        "links": [
-            {"rel": "self", "href": f"/summarizations/{row['id']}"},
-            {"rel": "collection", "href": "/summarizations"},
-            {"rel": "update", "href": f"/summarizations/{row['id']}"},
-            {"rel": "delete", "href": f"/summarizations/{row['id']}"}
-        ]
-    }
+    with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+        sql = """
+        SELECT id, patient_id, input_text, summary
+        FROM summaries
+        """
+        params = []
+
+        if patient_id:
+            sql += " WHERE patient_id = %s"
+            params.append(patient_id)
+
+        sql += " LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No summarizations found")
+
+    return [
+        {
+            "summarization_id": row["id"],
+            "patient_id": row["patient_id"],
+            "input_text": row["input_text"],
+            "summary": row["summary"],
+            "links": [
+                {"rel": "self", "href": f"/summarizations/{row['id']}"},
+                {"rel": "collection", "href": "/summarizations"},
+                {"rel": "update", "href": f"/summarizations/{row['id']}"},
+                {"rel": "delete", "href": f"/summarizations/{row['id']}"}
+            ]
+        }
+        for row in rows
+    ]
+
 
 # POST endpoint
+# POST endpoint
 @app.post("/summarizations", response_model=dict, status_code=201)
-def create_summarization(input_text: str, summary: str):
+def create_summarization(patient_id: str, input_text: str):
+    # Backend-generated summary (first 10 characters)
+    summary = input_text[:10]
+
     with conn.cursor() as cursor:
-        sql = "INSERT INTO summaries (input_text, summary) VALUES (%s, %s)"
-        cursor.execute(sql, (input_text, summary))
+        sql = """
+        INSERT INTO summaries (patient_id, input_text, summary)
+        VALUES (%s, %s, %s)
+        """
+        cursor.execute(sql, (patient_id, input_text, summary))
         new_id = cursor.lastrowid
         conn.commit()
 
@@ -120,37 +162,78 @@ def create_summarization(input_text: str, summary: str):
         "summarization_id": new_id,
         "input_text": input_text,
         "summary": summary,
+        "patient_id": patient_id,
         "links": [
-            {"rel": "self", "href": f"/summarizations/{new_id}"},
+            {"rel": "self", "href": f"/summarizations/{patient_id}"},
             {"rel": "collection", "href": "/summarizations"},
-            {"rel": "update", "href": f"/summarizations/{new_id}"},
-            {"rel": "delete", "href": f"/summarizations/{new_id}"}
+            {"rel": "update", "href": f"/summarizations/{patient_id}"},
+            {"rel": "delete", "href": f"/summarizations/{patient_id}"}
         ]
     }
-# PUT endpoint
-@app.put("/summarizations/{summarization_id}", response_model=dict)
-def update_summarization(summarization_id: int, summary: str):
+
+# PUT endpoint (patient-scoped single summary)
+@app.put(
+    "/patients/{patient_id}/summarizations/{summarization_id}",
+    response_model=dict
+)
+def update_summarization(
+    patient_id: str,
+    summarization_id: int,
+    summary: str
+):
     with conn.cursor() as cursor:
-        cursor.execute("SELECT id FROM summaries WHERE id=%s", (summarization_id,))
+        # Verify the summary belongs to the patient
+        cursor.execute(
+            """
+            SELECT id
+            FROM summaries
+            WHERE id = %s AND patient_id = %s
+            """,
+            (summarization_id, patient_id)
+        )
         exists = cursor.fetchone()
 
         if not exists:
-            raise HTTPException(status_code=404, detail="Summarization not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Summarization not found for this patient"
+            )
 
-        sql = "UPDATE summaries SET summary=%s WHERE id=%s"
-        cursor.execute(sql, (summary, summarization_id))
+        # Update summary
+        cursor.execute(
+            """
+            UPDATE summaries
+            SET summary = %s
+            WHERE id = %s AND patient_id = %s
+            """,
+            (summary, summarization_id, patient_id)
+        )
         conn.commit()
-# test
+
     return {
         "summarization_id": summarization_id,
+        "patient_id": patient_id,
         "summary": summary,
         "links": [
-            {"rel": "self", "href": f"/summarizations/{summarization_id}"},
-            {"rel": "collection", "href": "/summarizations"},
-            {"rel": "update", "href": f"/summarizations/{summarization_id}"},
-            {"rel": "delete", "href": f"/summarizations/{summarization_id}"}
+            {
+                "rel": "self",
+                "href": f"/patients/{patient_id}/summarizations/{summarization_id}"
+            },
+            {
+                "rel": "collection",
+                "href": f"/summarizations?patient_id={patient_id}"
+            },
+            {
+                "rel": "update",
+                "href": f"/patients/{patient_id}/summarizations/{summarization_id}"
+            },
+            {
+                "rel": "delete",
+                "href": f"/patients/{patient_id}/summarizations/{summarization_id}"
+            }
         ]
     }
+
 
 # DELETE endpoint
 @app.delete("/summarizations/{summarization_id}", response_model=dict)
@@ -171,6 +254,40 @@ def delete_summarization(summarization_id: int):
             {"rel": "collection", "href": "/summarizations"}
         ]
     }
+
+
+@app.delete("/summarizations/patient/{patient_id}", response_model=dict)
+def delete_summaries_by_patient(patient_id: str):
+    with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+        # Count summaries first
+        cursor.execute(
+            "SELECT COUNT(*) AS count FROM summaries WHERE patient_id=%s",
+            (patient_id,)
+        )
+        result = cursor.fetchone()
+        count = result["count"]
+
+        if count == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="No summaries found for this patient"
+            )
+
+        # Delete all summaries for patient
+        cursor.execute(
+            "DELETE FROM summaries WHERE patient_id=%s",
+            (patient_id,)
+        )
+        conn.commit()
+
+    return {
+        "patient_id": patient_id,
+        "deleted_count": count,
+        "links": [
+            {"rel": "collection", "href": "/summarizations"}
+        ]
+    }
+
 
 
     # UPDATE endpoint
@@ -222,19 +339,22 @@ def run_summarization_job(job_id: str, input_text: str):
 # 1️⃣  ASYNC SUMMARIZATION ENDPOINT (returns 202)
 # ------------------------------
 @app.post("/summarizations/async", status_code=202)
-def create_async_summarization(input_text: str):
+def create_async_summarization(patient_id: str, input_text: str):
 
     job_id = str(uuid.uuid4())
 
     jobs[job_id] = {
         "status": "pending",
-        "summary": None
+        "patient_id": patient_id,
+        "input_text": input_text,
+        "summary": None,
+        "summarization_id": None
     }
 
     # Launch background worker
     thread = threading.Thread(
         target=run_summarization_job,
-        args=(job_id, input_text)
+        args=(job_id,)
     )
     thread.start()
 
@@ -242,9 +362,11 @@ def create_async_summarization(input_text: str):
         "job_id": job_id,
         "status": "pending",
         "links": [
-            {"rel": "self", "href": f"/jobs/{job_id}"}
+            {"rel": "status", "href": f"/jobs/{job_id}"},
+            {"rel": "collection", "href": "/summarizations"}
         ]
     }
+
 
 # ------------------------------
 # 2️⃣  JOB STATUS POLLING
