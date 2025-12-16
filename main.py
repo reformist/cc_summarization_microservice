@@ -29,6 +29,10 @@ from google.cloud import pubsub_v1
 publisher = pubsub_v1.PublisherClient()
 topic_path = publisher.topic_path("cloudcomputing-473814", "summarization-events")
 
+from openai import OpenAI
+import os
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 port = int(os.environ.get("FASTAPIPORT", 8000))
@@ -68,6 +72,24 @@ def create_summarization(summarization: SummarizationCreate):
         text=new_summarization
     )
 # def delete_summarization(summarization: SummarizationDelete):
+def generate_medical_summary(input_text: str) -> str:
+    prompt = (
+        "Summarize this medical context into a few sentences so that a "
+        "layperson can understand:\n\n"
+        f"{input_text}"
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",  # cheaper + good for summaries
+        messages=[
+            {"role": "system", "content": "You are a medical summarization assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=150,
+    )
+
+    return response.choices[0].message.content.strip()
 
 
 
@@ -147,7 +169,8 @@ def get_summarizations(
 @app.post("/summarizations", response_model=dict, status_code=201)
 def create_summarization(patient_id: str, input_text: str):
     # Backend-generated summary (first 10 characters)
-    summary = input_text[:10]
+    summary = generate_medical_summary(input_text)
+
 
     with conn.cursor() as cursor:
         sql = """
@@ -310,22 +333,49 @@ def update_summarization(summarization_id: int, summarization: SummarizationUpda
         summary=summarization.summary
     )
 
-
 jobs = {}
-
 # ---- BACKGROUND WORKER ----
 def run_summarization_job(job_id: str, input_text: str):
     try:
         jobs[job_id]["status"] = "processing"
 
-        # Simulate slow summarization (replace with real model)
-        time.sleep(20)
-        summary = input_text[:5]  # pretend this is the summarizer
+        time.sleep(5)
 
-        # Save into the database
+        # ---- GPT SUMMARIZATION ----
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a medical assistant. Generate a concise, "
+                        "clinically accurate medical summary suitable for a physician."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": input_text
+                }
+            ],
+            temperature=0.2
+        )
+
+        summary = response.choices[0].message.content.strip()
+
+        # ---- SAVE TO DATABASE ----
         with conn.cursor() as cursor:
-            sql = "INSERT INTO summaries (input_text, summary) VALUES (%s, %s)"
-            cursor.execute(sql, (input_text, summary))
+            sql = """
+                INSERT INTO summaries (patient_id, input_text, summary)
+                VALUES (%s, %s, %s)
+            """
+            cursor.execute(
+                sql,
+                (
+                    jobs[job_id]["patient_id"],
+                    input_text,
+                    summary
+                )
+            )
             conn.commit()
 
         jobs[job_id]["status"] = "completed"
@@ -335,8 +385,9 @@ def run_summarization_job(job_id: str, input_text: str):
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
 
+
 # ------------------------------
-# 1️⃣  ASYNC SUMMARIZATION ENDPOINT (returns 202)
+# 1️⃣ ASYNC SUMMARIZATION ENDPOINT
 # ------------------------------
 @app.post("/summarizations/async", status_code=202)
 def create_async_summarization(patient_id: str, input_text: str):
@@ -347,14 +398,12 @@ def create_async_summarization(patient_id: str, input_text: str):
         "status": "pending",
         "patient_id": patient_id,
         "input_text": input_text,
-        "summary": None,
-        "summarization_id": None
+        "summary": None
     }
 
-    # Launch background worker
     thread = threading.Thread(
         target=run_summarization_job,
-        args=(job_id,)
+        args=(job_id, input_text)
     )
     thread.start()
 
@@ -369,7 +418,7 @@ def create_async_summarization(patient_id: str, input_text: str):
 
 
 # ------------------------------
-# 2️⃣  JOB STATUS POLLING
+# 2️⃣ JOB STATUS POLLING
 # ------------------------------
 @app.get("/jobs/{job_id}")
 def get_job_status(job_id: str):
@@ -391,6 +440,87 @@ def get_job_status(job_id: str):
         response["error"] = job.get("error")
 
     return response
+
+# jobs = {}
+
+# # ---- BACKGROUND WORKER ----
+# def run_summarization_job(job_id: str, input_text: str):
+#     try:
+#         jobs[job_id]["status"] = "processing"
+
+#         # Simulate slow summarization (replace with real model)
+#         time.sleep(20)
+#         summary = input_text[:5]  # pretend this is the summarizer
+
+#         # Save into the database
+#         with conn.cursor() as cursor:
+#             sql = "INSERT INTO summaries (input_text, summary) VALUES (%s, %s)"
+#             cursor.execute(sql, (input_text, summary))
+#             conn.commit()
+
+#         jobs[job_id]["status"] = "completed"
+#         jobs[job_id]["summary"] = summary
+
+#     except Exception as e:
+#         jobs[job_id]["status"] = "failed"
+#         jobs[job_id]["error"] = str(e)
+
+# # ------------------------------
+# # 1️⃣  ASYNC SUMMARIZATION ENDPOINT (returns 202)
+# # ------------------------------
+# @app.post("/summarizations/async", status_code=202)
+# def create_async_summarization(patient_id: str, input_text: str):
+
+#     job_id = str(uuid.uuid4())
+
+#     jobs[job_id] = {
+#         "status": "pending",
+#         "patient_id": patient_id,
+#         "input_text": input_text,
+#         "summary": None,
+#         "summarization_id": None
+#     }
+
+#     # Launch background worker
+#     thread = threading.Thread(
+#         target=run_summarization_job,
+#         args=(job_id,)
+#     )
+#     thread.start()
+
+#     return {
+#         "job_id": job_id,
+#         "status": "pending",
+#         "links": [
+#             {"rel": "status", "href": f"/jobs/{job_id}"},
+#             {"rel": "collection", "href": "/summarizations"}
+#         ]
+#     }
+
+
+# # ------------------------------
+# # 2️⃣  JOB STATUS POLLING
+# # ------------------------------
+# @app.get("/jobs/{job_id}")
+# def get_job_status(job_id: str):
+#     if job_id not in jobs:
+#         raise HTTPException(status_code=404, detail="Job not found")
+
+#     job = jobs[job_id]
+
+#     response = {
+#         "job_id": job_id,
+#         "status": job["status"],
+#         "links": [{"rel": "self", "href": f"/jobs/{job_id}"}]
+#     }
+
+#     if job["status"] == "completed":
+#         response["summary"] = job["summary"]
+
+#     if job["status"] == "failed":
+#         response["error"] = job.get("error")
+
+#     return response
 
 # -----------------------------------------------------------------------------
 # Root
